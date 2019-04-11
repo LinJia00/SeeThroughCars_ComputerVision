@@ -8,21 +8,27 @@ The goal of this code is to explorer a video. It provide following functions:
     5. next 10th frame (->)
     6. previous 10th frame (<-)
     7. print current frame number (c)
+    8. save current frame as a file ( )
     8. quit (q)
 
-The frame number is 1 based.
+The frame number is 0 based.
 
 example:
-py Functions\video_explorer.py Inputs\2019-04-03-16-38-48.MP4 -r 30
+py Functions\video_explorer.py Inputs\2019-04-03-16-38-48.MP4
 '''
 import argparse
 import numpy as np
 import cv2
 import time
+import os
 
 
 if __name__ == '__main__':
     # read arguments.
+    startFrame = 0
+    path = './Outputs/'
+    baseFileName = 'cheesboard'
+    extFileName = '.tif'
     description = "Video explorer."
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('infile', type=argparse.FileType('r'))
@@ -31,7 +37,7 @@ if __name__ == '__main__':
                         action="store_true")
     args = parser.parse_args()
     cap = cv2.VideoCapture(args.infile.name)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 589)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, startFrame)
     playSpeed = 0
     textFont = cv2.FONT_HERSHEY_SIMPLEX
     textPos = (10, 30)
@@ -67,6 +73,9 @@ if __name__ == '__main__':
         elif key == ord('c'):
             print(current_frame)
             cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
+        elif key == ord(' '):
+            outfile = os.path.join(path, baseFileName + str(current_frame) + extFileName)
+            cv2.imwrith(outfile, frame)
         else:
             if playSpeed == 0:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)

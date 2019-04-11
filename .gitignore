@@ -1,4 +1,6 @@
+env/*
 *.pyc
 *.pdf
 Inputs/*
-Outputs/*
+Outputs/*.tif
+Outputs/*.png
