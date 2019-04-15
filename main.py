@@ -14,35 +14,30 @@ from Functions.FileCamera import FileCamera, FileStereoCamera
 from Functions.Output import Output
 
 
-def filter_distance(matches, kp_1, ratio):
-    # filter zero matches
-    n_match = np.array([len(m) for m in matches])
-    matches = [matches[i] for i in range(len(matches)) if n_match[i]]
-    kp_1 = kp_1[n_match == 1]
-    #kp_1 = [kp_1[i] for i in range(len(kp_1)) if n_match[i]]
-    # computer thresh and filter
+def filter_distance(matches, ratio):
+    mask = np.zeros((len(matches), 2), dtype=int)
+    for i, m in enumerate(matches):
+        if len(m) == 2:
+            if m[0].distance < ratio*m[1].distance:
+                mask[i, 0] = 1
+    '''
     dist = np.array([m[0].distance for m in matches])
     thres_dist = (dist.sum() / dist.shape[0]) * ratio
     mask = dist < thres_dist
     matches = np.array(matches)[mask]
     kp_1 = kp_1[mask]
-    return matches, kp_1
+    '''
+    return mask
 
 
-def LRFilter(matches, kp_l, kp_r, des_l, vert_dist_thres):
-    # filter zero matches
-    n_match = [len(m) for m in matches]
-    matches = [matches[i] for i in range(len(matches)) if n_match[i]]
-    kp_l = [kp_l[i] for i in range(len(kp_l)) if n_match[i]]
-    des_l = [des_l[i] for i in range(len(des_l)) if n_match[i]]
+def LRFilter(matches, kp_l, kp_r, vert_dist_thres):
+    mask = np.zeros(len(matches), dtype=int)
     y_l = np.array([kp.pt[1] for kp in kp_l])
-    y_r = np.array([kp_r[m[0].trainIdx].pt[1] for m in matches])
+    y_r = np.array([kp_r[m[0].trainIdx].pt[1] if len(m) else float('inf') for m in matches])
+    # y_r = np.array([kp_r[m[0].trainIdx].pt[1] for m in matches])
     vert_dists = np.abs(y_l - y_r)
-    mask = vert_dists < vert_dist_thres
-    matches = np.array(matches)[mask]
-    kp_l = np.array(kp_l)[mask]
-    des_l = np.array(des_l)[mask]
-    return matches, kp_l, des_l
+    mask[vert_dists < vert_dist_thres] = 1
+    return mask.reshape((-1, 1))
 
 
 def plot3DPoints(h, w, pts3, ptcolor):
@@ -92,6 +87,12 @@ Examples:
     config = configparser.ConfigParser()
     config.read('./config.ini')
     startTime = float(config['general']['start time'])
+    working_res = config['output']['res']
+    working_res = np.fromstring(working_res, dtype=int, sep=' ')
+    downScale = int(config['general']['down scale'])
+    if downScale > 1:
+        working_res = np.rint(working_res/downScale).astype(int)
+    working_res = tuple(working_res.tolist())
     # initialize
     camera_F = FileStereoCamera(config['frontCamera']['FileName'],
                                 startFrame=float(config['frontCamera']['startFrame']),
@@ -99,22 +100,44 @@ Examples:
     camera_B = FileCamera(config['backCamera']['FileName'],
                           startFrame=float(config['backCamera']['startFrame']),
                           startTime=startTime)
-    output = Output(camera_F, camera_B, config['output'])
+    output = Output(camera_F, camera_B, config)
     frameTime = 1.0 / float(config['output']['FPS'])
     data = dict(time=.0, nFrames=0)
-    feature_detector = config['general']['feature points method']
-    if feature_detector == 'orb':
-        feature_detector = cv2.ORB_create()
-    elif feature_detector == 'sift':
-        feature_detector = cv2.xfeatures2d.SIFT_create()
+    feature_method = config['general']['feature points method']
+    FLANN_INDEX_KDTREE = 1
+    FLANN_INDEX_LSH = 6
+    if feature_method == 'orb':
+        detector = cv2.ORB_create(nfeatures=2000)
+        index_params = dict(algorithm=FLANN_INDEX_LSH,
+                            table_number=6,  # 12
+                            key_size=12,     # 20
+                            multi_probe_level=1)  # 2
+    elif feature_method == 'sift':
+        detector = cv2.xfeatures2d.SIFT_create()
+        index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
     else:
-        raise ValueError("Don't support method:", feature_detector)
+        raise ValueError("Don't support method:", detector)
+    search_params = dict(checks=50)   # or pass empty dictionary
+    mathcer = cv2.FlannBasedMatcher(index_params, search_params)
     mtx_b = np.array([[972.822, 0, 636.455], [0, 879.505, 216.031], [0, 0, 1]])
     dist_b = np.array([0.1356, -0.7613, 0.0273, -0.0368, 0])  #np.zeros(5)
     rvecs, tvecs = None, None
     drawKP = config['general']['draw keypoints'] = 'yes'
+    mask_b = config['backCamera']['mask']
+    mask_b = np.fromstring(mask_b, dtype=int, sep=' ')
+    mask_b1 = tuple(mask_b[:2].tolist())
+    mask_b2 = tuple(mask_b[2:].tolist())
     mask_b = np.zeros((720, 1280), dtype="uint8")
-    cv2.rectangle(mask_b, (0, 0), (1280, 550), 255, -1)
+    cv2.rectangle(mask_b, mask_b1, mask_b2, 255, -1)
+    mask_f = config['frontCamera']['mask']
+    mask_f = np.fromstring(mask_f, dtype=int, sep=' ')
+    mask_f1 = tuple(mask_f[:2].tolist())
+    mask_f2 = tuple(mask_f[2:].tolist())
+    mask_f = np.zeros((720, 1280), dtype="uint8")
+    cv2.rectangle(mask_f, mask_f1, mask_f2, 255, -1)
+    if downScale > 1:
+        mask_b = cv2.resize(mask_b, working_res)
+        mask_f = cv2.resize(mask_f, working_res)
 
     useExtrinsicGuess = 0
     # run
@@ -127,28 +150,24 @@ Examples:
         image_FD = camera_F.read('depth')
         camera_B.addTime(frameTime)
         image_B = camera_B.read()
+        if downScale > 1:
+            image_FL = cv2.resize(image_FL, working_res)
+            image_FR = cv2.resize(image_FR, working_res)
+            image_FD = cv2.resize(image_FD, working_res)
+            image_B = cv2.resize(image_B, working_res)
 
         # Front Features
-        kp_L, des_L = feature_detector.detectAndCompute(image_FL, mask=None)
-        kp_R, des_R = feature_detector.detectAndCompute(image_FR, mask=None)
-        # Here we can apply a gridbased sampling method to reduce the kp number
-        #kp, des = orb.compute(image_FL, kp)
-        # FLANN
-        FLANN_INDEX_KDTREE = 1
-        FLANN_INDEX_LSH = 6
-        #index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
-        index_params = dict(algorithm=FLANN_INDEX_LSH,
-                            table_number=6,  # 12
-                            key_size=12,     # 20
-                            multi_probe_level=1)  # 2
-        index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
-        search_params = dict(checks=50)   # or pass empty dictionary
-        flann = cv2.FlannBasedMatcher(index_params, search_params)
-        matches = flann.knnMatch(des_L, des_R, k=1)
-        matches, kp_L, des_L = LRFilter(matches, kp_L, kp_R, des_L, 1)
-        data['lr_matches'] = matches
-        data['kp_l2r'] = kp_L
-        data['kp_r'] = kp_R
+        data['kp_l'], des_L = detector.detectAndCompute(image_FL, mask=mask_f)
+        data['kp_r'], des_R = detector.detectAndCompute(image_FR, mask=mask_f)
+        data['kp_l'] = np.array(data['kp_l'])
+        data['kp_r'] = np.array(data['kp_r'])
+        data['lr_matches'] = mathcer.knnMatch(des_L, des_R, k=1)
+        data['lr_mask'] = LRFilter(data['lr_matches'], data['kp_l'], data['kp_r'], 1)
+        print('number of Front features:', data['lr_mask'].sum())
+        data['kp_fl'] = data['kp_l'][data['lr_mask'][:, 0] == 1]
+        des_L = des_L[data['lr_mask'][:, 0] == 1]
+        # 3d map
+        '''
         p2d = np.array([kp.pt for kp in kp_L])
         #kp2d[:, 0], kp2d[:, 1] = kp2d[:, 1], kp2d[:, 0].copy()
         p2d = np.rint(p2d).astype(int)  # index in (collumn/x, row/y)
@@ -161,17 +180,28 @@ Examples:
         #kp3d = kp3d[~np.isnan(kp3d)].reshape((-1, 4))[:, :3]
         print('number of 3D features:', p_3d.shape[0])
         print(np.count_nonzero(np.isnan(P3D_L))//3, P3D_L.shape[0]*P3D_L.shape[1])
+        '''
         # Back Features
-        kp_B, des_B = feature_detector.detectAndCompute(image_B, mask=mask_b)
-        matches = flann.knnMatch(des_L, des_B, k=1)
-        matches, kp_L = filter_distance(matches, kp_L, 1)
-        data['kp_l2b'] = kp_L
-        data['bl_matches'] = matches
+        kp_B, des_B = detector.detectAndCompute(image_B, mask=mask_b)
+        matches = mathcer.knnMatch(des_L, des_B, k=2)
+        data['fb_matches'] = matches
         data['kp_b'] = kp_B
+        data['fb_mask'] = filter_distance(matches, .8)
+        if downScale > 1:
+            for kp in data['kp_b']:
+                kp.pt = (kp.pt[0]*downScale, kp.pt[1]*downScale)
+            for kp in data['kp_l']:
+                kp.pt = (kp.pt[0]*downScale, kp.pt[1]*downScale)
+            for kp in data['kp_r']:
+                kp.pt = (kp.pt[0]*downScale, kp.pt[1]*downScale)
+        '''
+        good_matches = [[matches[i][0]] for i in range(len(matches)) if mask[i, 0]]
+        #matches = matches[mask == 1].reshape((-1, 1))
+        mask = np.sum(mask, axis=1)
+        kp_L = kp_L[mask == 1]
         # p2_b = [kp_B[m[0].trainIdx] for m in matches]
         p2_l = np.array([kp.pt for kp in kp_L])
         print('number of matched 3D features:', p_3d.shape[0])
-        '''
         # Back pose estimate
         if p_3d.shape[0] > 4:
             if useExtrinsicGuess:

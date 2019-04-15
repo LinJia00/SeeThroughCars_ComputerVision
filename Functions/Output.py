@@ -16,17 +16,29 @@ class Output(object):
         self.filename = None
         self.camera_f = camera_f
         self.camera_b = camera_b
-        self.layout = config['layout']
-        self.res = (int(config['width']), int(config['height']))
-        self.drawKP = config['draw keypoints'] == 'yes'
-        self.showCamInfo = config['show cam info'] == 'yes'
-        self.showSysInfo = config['show sys info'] == 'yes'
-        self.colors = np.random.randint(0, 255, (500, 3)).tolist()
-        self.textFont = cv2.FONT_HERSHEY_SIMPLEX
-        self.textPos = (10, 30)
-        self.textColor = (255, 255, 255)
-        self.textScale = 1
-        self.textPosGlobal = (800, 710)
+        self.layout = config['output']['layout']
+        self.res = (int(config['output']['width']), int(config['output']['height']))
+        self.drawKP = config['output']['draw keypoints'] == 'yes'
+        self.drawMask = config['output']['draw mask'] == 'yes'
+        self.maskColor = (0, 0, 255)
+        mask_b = config['backCamera']['mask']
+        mask_b = np.fromstring(mask_b, dtype=int, sep=' ')
+        self.mask_b1 = tuple(mask_b[:2].tolist())
+        self.mask_b2 = tuple(mask_b[2:].tolist())
+        mask_f = config['frontCamera']['mask']
+        mask_f = np.fromstring(mask_f, dtype=int, sep=' ')
+        self.mask_f1 = tuple(mask_f[:2].tolist())
+        self.mask_f2 = tuple(mask_f[2:].tolist())
+        self.showCamInfo = config['output']['show cam info'] == 'yes'
+        self.showSysInfo = config['output']['show sys info'] == 'yes'
+        self.head_params = dict(fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                                org=(10, 30), fontScale=1,
+                                color=(255, 255, 255))
+        self.foot_params = dict(fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                                org=(800, 710), fontScale=1,
+                                color=(255, 255, 255))
+        self.matche_params = dict(matchColor=(-1, -1, -1), flags=0,
+                                  singlePointColor=(255, 0, 0))
         self.pause = True
 
     def display(self, result, data):
@@ -44,8 +56,7 @@ class Output(object):
         if self.showSysInfo:
             timeStr = datetime.fromtimestamp(data['time']).strftime('%M:%S:%f')
             text = "Frame: {:4d}; Time: {}".format(data['nFrames'], timeStr[:-3])
-            cv2.putText(img, text, self.textPosGlobal, self.textFont,
-                        self.textScale, self.textColor)
+            cv2.putText(img, text, **self.foot_params)
         # show
         cv2.imshow('', img)
         if self.pause:
@@ -90,7 +101,7 @@ class Output(object):
         if img.shape[:2] != self.res:
             img = cv2.resize(img, self.res)
         if self.showCamInfo:
-            self._addCamTitle(img, 'Left', self.camera_f, self.textPos)
+            self._addCamTitle(img, 'Left', self.camera_f)
         return img
 
     def _r(self):
@@ -98,7 +109,7 @@ class Output(object):
         if img.shape[:2] != self.res:
             img = cv2.resize(img, self.res)
         if self.showCamInfo:
-            self._addCamTitle(img, 'Right', self.camera_f, self.textPos)
+            self._addCamTitle(img, 'Right', self.camera_f)
         return img
 
     def _b(self):
@@ -106,7 +117,7 @@ class Output(object):
         if img.shape[:2] != self.res:
             img = cv2.resize(img, self.res)
         if self.showCamInfo:
-            self._addCamTitle(img, 'Back', self.camera_b, self.textPos)
+            self._addCamTitle(img, 'Back', self.camera_b)
         return img
 
     def _lr(self):
@@ -120,14 +131,17 @@ class Output(object):
     def _mlr(self):
         img_l = self.camera_f.read('left')[:, :, :3]
         img_r = self.camera_f.read('right')[:, :, :3]
+        if self.drawMask:
+            cv2.rectangle(img_r, self.mask_f1, self.mask_f2, self.maskColor, 2)
+            cv2.rectangle(img_l, self.mask_f1, self.mask_f2, self.maskColor, 2)
         matches = self.data['lr_matches']
-        kp_l = self.data['kp_l2r']
+        kp_l = self.data['kp_l']
         kp_r = self.data['kp_r']
-        img = self._drawMatch(matches, img_l, kp_l, img_r, kp_r)
+        mask = self.data['lr_mask']
+        img = self._drawMatch(matches, img_l, kp_l, img_r, kp_r, mask.tolist())
         img = cv2.resize(img, (self.res[0], self.res[1]//2))
-        text = "Left-Right Match, n_matches: {:3d}".format(len(matches))
-        cv2.putText(img, text, self.textPos, self.textFont, self.textScale,
-                    self.textColor)
+        text = "Left-Right Match, n_matches: {:3d}".format(mask.sum())
+        cv2.putText(img, text, **self.head_params)
         return img
 
     def _bl(self):
@@ -141,30 +155,29 @@ class Output(object):
     def _mlb(self):
         img_b = self.camera_b.read()[:, :, :3]
         img_l = self.camera_f.read('left')[:, :, :3]
-        matches = self.data['bl_matches']
+        if self.drawMask:
+            cv2.rectangle(img_b, self.mask_b1, self.mask_b2, self.maskColor, 2)
+            cv2.rectangle(img_l, self.mask_f1, self.mask_f2, self.maskColor, 2)
+        matches = self.data['fb_matches']
         kp_b = self.data['kp_b']
-        kp_l = self.data['kp_l2b']
-        img = self._drawMatch(matches, img_l, kp_l, img_b, kp_b)
+        kp_l = self.data['kp_fl']
+        mask = self.data['fb_mask']
+        img = self._drawMatch(matches, img_l, kp_l, img_b, kp_b, mask.tolist())
         img = cv2.resize(img, (self.res[0], self.res[1]//2))
-        text = "Left-Back Match, n_matches: {:3d}".format(len(matches))
-        cv2.putText(img, text, self.textPos, self.textFont, self.textScale,
-                    self.textColor)
+        text = "Left-Back Match, n_matches: {:3d}".format(mask.sum())
+        cv2.putText(img, text, **self.head_params)
         return img
 
-    def _addCamTitle(self, img, title, cam, pos):
+    def _addCamTitle(self, img, title, cam):
         time = datetime.fromtimestamp(cam.posTime())
         timeStr = time.strftime('%M:%S:%f')
         nFrame = cam.posFrame()
         text = "{}: {:5d}, {}".format(title, nFrame, timeStr[:-3])
-        cv2.putText(img, text, pos, self.textFont, self.textScale,
-                    self.textColor)
+        cv2.putText(img, text, **self.head_params)
 
-    def _drawMatch(self, matches, img1, kp1, img2, kp2):
-        for i in range(len(matches)):
-            matches[i][0].queryIdx = i
+    def _drawMatch(self, matches, img1, kp1, img2, kp2, mask=None):
         draw_params = dict(matchColor=(-1, -1, -1),
                            singlePointColor=(255, 0, 0),
-                           matchesMask=None,
                            flags=0)
         return cv2.drawMatchesKnn(img1, kp1, img2, kp2, matches,
-                                  None, **draw_params)
+                                  None, matchesMask=mask, **self.matche_params)

@@ -60,7 +60,6 @@ class FileStereoCamera(object):
         self.left_disto = left_cam.disto
         self.T = self.cam.get_camera_information().calibration_parameters.T
         self.R = self.cam.get_camera_information().calibration_parameters.R
-        print(self.T, self.R)
         self.cam.set_depth_max_range_value(40) # meter
         self.width = self.cam.get_resolution().width;
         self.height = self.cam.get_resolution().height;
