@@ -166,27 +166,10 @@ Examples:
         print('number of Front features:', data['lr_mask'].sum())
         data['kp_fl'] = data['kp_l'][data['lr_mask'][:, 0] == 1]
         des_L = des_L[data['lr_mask'][:, 0] == 1]
-        # 3d map
-        '''
-        p2d = np.array([kp.pt for kp in kp_L])
-        #kp2d[:, 0], kp2d[:, 1] = kp2d[:, 1], kp2d[:, 0].copy()
-        p2d = np.rint(p2d).astype(int)  # index in (collumn/x, row/y)
-        print('number of Front features:', p2d.shape[0])
-        P3D_L = camera_F.read('3D')[:, :, :3]  # has shape rows/y x collumns/x
-        p_3d = P3D_L[p2d[:, 1], p2d[:, 0], :]
-        mask = ~np.isnan(p_3d[:, 0])
-        kp_L = kp_L[mask]
-        des_L = des_L[mask]
-        #kp3d = kp3d[~np.isnan(kp3d)].reshape((-1, 4))[:, :3]
-        print('number of 3D features:', p_3d.shape[0])
-        print(np.count_nonzero(np.isnan(P3D_L))//3, P3D_L.shape[0]*P3D_L.shape[1])
-        '''
         # Back Features
-        kp_B, des_B = detector.detectAndCompute(image_B, mask=mask_b)
-        matches = mathcer.knnMatch(des_L, des_B, k=2)
-        data['fb_matches'] = matches
-        data['kp_b'] = kp_B
-        data['fb_mask'] = filter_distance(matches, .8)
+        data['kp_b'], des_B = detector.detectAndCompute(image_B, mask=mask_b)
+        data['fb_matches'] = mathcer.knnMatch(des_L, des_B, k=2)
+        data['fb_mask'] = filter_distance(data['fb_matches'], .8)
         if downScale > 1:
             for kp in data['kp_b']:
                 kp.pt = (kp.pt[0]*downScale, kp.pt[1]*downScale)
@@ -194,40 +177,48 @@ Examples:
                 kp.pt = (kp.pt[0]*downScale, kp.pt[1]*downScale)
             for kp in data['kp_r']:
                 kp.pt = (kp.pt[0]*downScale, kp.pt[1]*downScale)
-        '''
-        good_matches = [[matches[i][0]] for i in range(len(matches)) if mask[i, 0]]
-        #matches = matches[mask == 1].reshape((-1, 1))
-        mask = np.sum(mask, axis=1)
-        kp_L = kp_L[mask == 1]
-        # p2_b = [kp_B[m[0].trainIdx] for m in matches]
-        p2_l = np.array([kp.pt for kp in kp_L])
-        print('number of matched 3D features:', p_3d.shape[0])
+        # 3d map
+        good_matches = [[data['fb_matches'][i][0]] for i in range(len(data['fb_matches'])) if data['fb_mask'][i, 0]]
+        good_matches = np.array(good_matches)
+        mask = np.sum(data['fb_mask'], axis=1)
+        good_kp_L = data['kp_fl'][mask == 1]
+        pt2_L = np.array([kp.pt for kp in good_kp_L])
+        pt2_L_int = np.rint(pt2_L).astype(int)  # index in (collumn/x, row/y)
+        xyz = camera_F.read('3D')[:, :, :3]  # has shape rows/y x collumns/x
+        pt3 = xyz[pt2_L_int[:, 1], pt2_L_int[:, 0], :]
+        mask = ~np.isnan(pt3[:, 0])
+        pt2_L = pt2_L[mask]
+        pnp3 = pt3[mask]
+        matches = good_matches[mask]
+        #print(np.count_nonzero(np.isnan(P3D_L))//3, P3D_L.shape[0]*P3D_L.shape[1])
+        data['pnp_2d'] = np.array([data['kp_b'][m[0].trainIdx].pt for m in matches])
+        print('number of matched 3D features:', pnp3.shape[0])
         # Back pose estimate
-        if p_3d.shape[0] > 4:
+        if pnp3.shape[0] > 4:
             if useExtrinsicGuess:
-                values = cv2.solvePnPRansac(p_3d, p_2d, mtx_b, dist_b, rvecs,
+                values = cv2.solvePnPRansac(pnp3, data['pnp_2d'], mtx_b, dist_b, rvecs,
                                             tvecs, 1, reprojectionError=5)
-                ret, rvecs, tvecs, inliers = values
+                ret, rvecs, tvecs, inlier = values
             else:
-                values = cv2.solvePnPRansac(p_3d, p_2d, mtx_b, dist_b,
+                values = cv2.solvePnPRansac(pnp3, data['pnp_2d'], mtx_b, dist_b,
                                             iterationsCount=2000,
                                             reprojectionError=5)
-                ret, rvecs, tvecs, inliers = values
+                ret, rvecs, tvecs, inlier = values
         else:
-            inliers = None
-        if inliers is None:
-            print('number of inliers:', 0)
-        elif len(inliers) < 10:
-            print('number of inliers:', 0)
+            inlier = None
+        if inlier is None:
+            inlier = []
+            data['pnp_inlier'] = []
+            data['R, T'] = None
         else:
-            useExtrinsicGuess = 1
-            p_3d = p_3d[inliers.reshape(-1)]
-            print('number of inliers:', len(inliers))
+            data['R, T'] = (rvecs, tvecs)
+            if len(inlier) > 10:
+                useExtrinsicGuess = 1
+            pt3 = pnp3[inlier.reshape(-1)]
+            data['pnp_inlier'] = data['pnp_2d'][inlier.reshape(-1)].astype(int)
             # project 3D points to image plane
-            proj_pts, jac = cv2.projectPoints(p_3d, rvecs, tvecs, mtx_b, dist_b)
-            for point in proj_pts:
-                cv2.circle(image_B, tuple(point[0]), 3, (0, 0, 255), -1)
-        '''
+            data['repreject_p2'], jac = cv2.projectPoints(pt3, rvecs, tvecs, mtx_b, dist_b)
+        print('number of inliers:', len(inlier))
         # Display
         stop = output.display(None, data)
         if stop:

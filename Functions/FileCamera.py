@@ -10,6 +10,8 @@ class FileCamera(object):
 
     def __init__(self, fileName, startFrame=0, startTime=0):
         self.fileName = fileName
+        self.mtx = [[972.822, 0, 636.455], [0, 879.505, 216.031], [0, 0, 1]]
+        self.disto = [0.1356, -0.7613, 0.0273, -0.0368, 0]
         self.cap = cv2.VideoCapture(self.fileName)
         #self.FPS = self.cap.get(cv2.CAP_PROP_FPS)
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, startFrame - 1)
